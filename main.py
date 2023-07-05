@@ -12,15 +12,17 @@ from migrate import migrate
 
 application: QApplication = None
 
+
 class NoteTableModel(QAbstractTableModel):
     def __init__(self, cursor):
         super().__init__()
         self.db_cursor = cursor
         self.headers = ['Note', 'Date Created', 'Bumps']
         self.content = []
+        self.selected_category = '<all>'
         self.fetch_data()
 
-    NoteData = namedtuple('NoteData', ['note', 'date_created', 'bump_count', 'detail', 'rowid'])
+    NoteData = namedtuple('NoteData', ['note', 'date_created', 'bump_count', 'detail', 'category', 'rowid'])
 
     def fetch_data(self):
         self.content = cur.execute("""
@@ -34,18 +36,31 @@ class NoteTableModel(QAbstractTableModel):
                    notes.date_created,
                    COALESCE(bump_counts.bump_score, 0) as bump_count,
                    notes.detail,
+                   notes.category,
                    notes.rowid
             FROM notes
             LEFT JOIN bump_counts
             ON bump_counts.note_key = notes.rowid
-        """).fetchall()
+            {category_condition}
+        """.format(
+            category_condition="" if self.selected_category == '<all>'else "WHERE notes.category = ?"
+        ),
+            tuple() if self.selected_category == '<all>' else (self.selected_category,)
+        ).fetchall()
 
-    def update_row(self, row_pos, new_note, new_detail):
+    def change_category(self, category):
+        self.selected_category = category
+        self.update()
+
+    def update_row(self, row_pos, new_note, new_detail, new_category):
         row = NoteTableModel.NoteData(*self.content[row_pos])
-        self.db_cursor.execute("UPDATE notes SET note=?, detail=? WHERE rowid=?", (new_note, new_detail, row.rowid))
+        self.db_cursor.execute("UPDATE notes SET note=?, detail=?, category=? WHERE rowid=?", (new_note, new_detail, new_category, row.rowid))
         self.db_cursor.connection.commit()
-        new_row = row._replace(note=new_note, detail=new_detail)
-        self.content[row_pos] = list(new_row)
+        new_row = row._replace(note=new_note, detail=new_detail, category=new_category)
+        if self.selected_category == '<all>' or self.selected_category == new_category:
+            self.content[row_pos] = list(new_row)
+        else:
+            self.content.pop(row_pos)
         self.layoutChanged.emit()
 
     def delete_row(self, row_pos):
@@ -56,10 +71,10 @@ class NoteTableModel(QAbstractTableModel):
         self.content.pop(row_pos)
         self.layoutChanged.emit()
 
-    def add_row(self, note, detail):
+    def add_row(self, note, detail, category):
         self.db_cursor.execute("""
-            INSERT INTO notes VALUES(?, ?, datetime('now', 'localtime'))
-        """, (note, detail))
+            INSERT INTO notes VALUES(?, ?, datetime('now', 'localtime'), ?)
+        """, (note, detail, category))
         self.db_cursor.connection.commit()
         self.update()
 
@@ -111,7 +126,8 @@ class NewNoteDialog(QDialog):
     def handle_data(self):
         note = self.noteEdit.toPlainText()
         detail = self.detailEdit.toHtml()
-        self.note_table_model.add_row(note, detail)
+        category = self.categoryEdit.text()
+        self.note_table_model.add_row(note, detail, category)
 
 
 class MainWindow(QMainWindow):
@@ -129,19 +145,34 @@ class MainWindow(QMainWindow):
         self.noteTableView.setColumnWidth(2, 60)
         self.noteTableView.resizeRowsToContents()
 
+        self.update_category_list()
+
         self.noteCreateButton.clicked.connect(self.new_note)
         self.noteDeleteButton.clicked.connect(self.delete_note)
         self.noteBumpUpButton.clicked.connect(self.bump_up)
         self.noteBumpDownButton.clicked.connect(self.bump_down)
         self.noteUpdateButton.clicked.connect(self.update_note)
+        self.categorySelect.currentTextChanged.connect(self.change_category)
+
+    def update_category_list(self):
+        categories = [x[0] for x in self.db_cursor.execute("SELECT DISTINCT category FROM notes WHERE category != ''").fetchall()]
+        categories.insert(0, '<all>')
+        self.categorySelect.clear()
+        self.categorySelect.addItems(categories)
+
+    def change_category(self, category):
+        self.note_table_model.change_category(category)
+        self.noteTableView.resizeRowsToContents()
 
     def update_note(self, signal):
         if self.selected_row < 0 or self.selected_row >= len(self.note_table_model.content):
             return
         note = self.noteBrowser.toPlainText()
         detail = self.detailBrowser.toHtml()
-        self.note_table_model.update_row(self.selected_row, note, detail)
+        category = self.categoryField.text()
+        self.note_table_model.update_row(self.selected_row, note, detail, category)
         self.noteTableView.resizeRowsToContents()
+        self.update_category_list()
 
     def bump_up(self, signal):
         if self.selected_row < 0 or self.selected_row >= len(self.note_table_model.content):
@@ -157,6 +188,7 @@ class MainWindow(QMainWindow):
         new_note_dialog = NewNoteDialog(self.db_cursor, self.note_table_model)
         new_note_dialog.exec()
         self.noteTableView.resizeRowsToContents()
+        self.update_category_list()
 
     def delete_note(self, signal):
         if self.selected_row < 0 or self.selected_row >= len(self.note_table_model.content):
@@ -177,11 +209,15 @@ class MainWindow(QMainWindow):
                 row = NoteTableModel.NoteData(*self.note_table_model.content[self.selected_row])
                 self.noteBrowser.setPlainText(row.note)
                 self.detailBrowser.setHtml(row.detail)
+                self.categoryField.setText(row.category)
+
+            self.update_category_list()
 
     def row_changed(self, current, previous):
         row = NoteTableModel.NoteData(*self.note_table_model.content[current.row()])
         self.noteBrowser.setPlainText(row.note)
         self.detailBrowser.setHtml(row.detail)
+        self.categoryField.setText(row.category)
         self.selected_row = current.row()
 
 

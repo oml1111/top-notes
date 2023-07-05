@@ -13,4 +13,10 @@ def migrate(cursor):
         # cursor.execute("ALTER TABLE note_bumps ADD COLUMN score INTEGER DEFAULT(1)")
         cursor.execute("PRAGMA user_version = 1")
         cursor.connection.commit()
-        user_version += 1
+        user_version = 1
+
+    if user_version == 1:
+        cursor.execute("ALTER TABLE notes ADD COLUMN category TEXT DEFAULT('')")
+        cursor.execute("PRAGMA user_version = 2")
+        cursor.connection.commit()
+        user_version = 2
