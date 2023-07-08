@@ -164,6 +164,12 @@ class MainWindow(QMainWindow):
         self.note_table_model.change_category(category)
         self.noteTableView.resizeRowsToContents()
 
+        if self.selected_row < len(self.note_table_model.content):  # Update the note browser content after category change
+            row = NoteTableModel.NoteData(*self.note_table_model.content[self.selected_row])
+            self.noteBrowser.setPlainText(row.note)
+            self.detailBrowser.setHtml(row.detail)
+            self.categoryField.setText(row.category)
+
     def update_note(self, signal):
         if self.selected_row < 0 or self.selected_row >= len(self.note_table_model.content):
             return
